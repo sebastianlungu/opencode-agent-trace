@@ -1,0 +1,1 @@
+{"name":"opencode-context-trace","version":"0.1.0","type":"module","license":"MIT","scripts":{"test":"node --test trace.test.ts"}}

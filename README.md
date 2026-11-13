@@ -1,0 +1,51 @@
+# OpenCode Agent Trace
+
+An experimental OpenCode V2 plugin that records agent-loop context-hook snapshots and provides a terminal panel for inspecting them.
+
+## Local installation
+
+Clone this repository locally, then add its absolute directory path to the `plugins` array in your OpenCode `opencode.json` or `opencode.jsonc`. Preserve any existing entries:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["/absolute/path/to/opencode-agent-trace"]
+}
+```
+
+This is a local source installation, not an npm release. Do not also load another copy of the `context-trace` plugin. In a session, use `/trace` or select **Context Trace: Open Timeline** from the command palette. Tab switches between the event and snapshot lists; j/k selects within each list. Press 1 for the selected event, or 2–4 for the independently selected snapshot's delta, context, and system/tools. The panel does not infer or indicate any association between the two selections.
+
+## Privacy and retention
+
+**Snapshots can contain sensitive information. There is no redaction.** The server records the context hook's messages, system blocks (including instruction metadata), tool descriptions and input schemas, model options, agent and model metadata. These can contain prompts, source code, tool outputs, personal information, or secrets. The plugin does not implement network transmission, but exposes trace data through its OpenCode RPC interface, so access to the OpenCode server matters.
+
+Snapshots are retained under `~/.local/share/opencode/context-trace/` on the server host, one JSON file per capture. Directory names are SHA-256 hashes of the session ID's UTF-16 code units, so IDs differing only in case remain separate on case-insensitive filesystems. The plugin requests owner-only access for the directory and files, subject to filesystem behavior. Incomplete temporary files can remain after a crash and may also contain sensitive data. Each capture repeats the full context, so disk usage can grow quickly. Protect backups and manually remove unwanted trace files when appropriate. Disabling the plugin or deleting OpenCode sessions does **not** delete traces. Files from the earlier per-session JSON format and directories using the previous session-ID encoding are left untouched and are not displayed; the old encoding can be ambiguous on case-insensitive filesystems, so they are not automatically merged.
+
+By default the capture limit is **1 GiB (1,073,741,824 bytes)** across the entire trace directory, including existing files and incomplete temporary files. A capture that would exceed the limit is skipped, without deleting existing files, and a warning is written to the OpenCode server log. Smaller later captures may still fit. Capture resumes when enough space is freed manually or the limit is raised. Existing data already above the limit is not removed. This counts file contents, not filesystem allocation or directory overhead; external writers and changes outside the plugin's lock are not controlled. Use the same limit for all plugin instances sharing the directory.
+
+To change the limit, replace the existing plugin entry with the object form (do not load both entries):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{ "package": "/absolute/path/to/opencode-agent-trace", "options": { "maxBytes": 2147483648 } }]
+}
+```
+
+`maxBytes` must be a non-negative safe integer in bytes; zero disables capture. Invalid values prevent the plugin from loading. Capture uses a shared lock to coordinate concurrent plugin writers. If a writer crashes while holding it, later captures time out with a generic warning; after confirming that no writer is active, manually remove the empty `.capture-lock` directory inside the trace directory. The plugin never automatically removes a possibly active lock or any retained snapshot.
+
+Disk locking, scanning, writing, and notification run in the background rather than delaying the model call. Each plugin instance keeps at most 16 pending captures and 16 MiB of serialized pending data, including the active capture; captures exceeding either limit are skipped with a server warning. The queue is in memory and is lost on process exit; a stalled write or notification can fill it. Captures are copied synchronously at the hook so later mutations cannot alter them: serialization of large contexts still takes CPU time and transient memory on the model-call path, even if the result exceeds the queue limit. With `maxBytes: 0`, events are not inspected or queued.
+
+On plugin unload, captures that have not started are discarded, and new captures are ignored. An active capture, including its notification, is allowed to finish before cleanup completes and registrations are removed. Consequently, a stalled write or notification can delay unload. Once cleanup completes, that plugin instance will not write or notify again; other instances can still capture independently. Previously saved snapshots are not deleted.
+
+Capture and notification failures are reported as a generic server warning without error details or captured content; they do not intentionally interrupt the model call. Failed writes are cleaned up when possible; a crash or cleanup failure can leave sensitive temporary files. A failed capture may be missing or incomplete. This is not an audit log and does not guarantee capture or durability across crashes.
+
+## Status and limitations
+
+The snapshot represents the context as seen by this plugin's `context` hook, **not necessarily the final request sent to a model**. Later hooks can change it; provider defaults and transformations may also apply. Auxiliary requests such as compaction, title generation, and transient generation are not captured. The event list follows the session's returned order; the separate snapshot list and deltas use filename timestamp order, which may not reflect causal order for simultaneous captures. The list loads only filenames and timestamps; selecting a snapshot loads that file and, for its delta, at most its immediate predecessor. Thus full-context memory and RPC payloads scale with the selected snapshot and predecessor rather than all snapshots, though individual snapshots and the session event list can still be large, and metadata scales with the number of files. The panel coalesces rapid snapshot selections into at most one active snapshot request. Malformed or unreadable files produce a warning when selected or needed as a predecessor; the delta is unavailable if its predecessor could not be read. The files are not modified. The panel falls back to session messages if RPC fails; that fallback does not include captured snapshots.
+
+Isolated QA confirmed live plugin loading, capture, RPC, and the interactive `/trace` panel with OpenCode v2.2.7. Other OpenCode versions have not been tested. The automated tests cover synthetic capture failures, damaged files, selection and context behavior, tool details, concurrent writers, and file permissions. Run the tests with `npm test` using Node.js 24 or newer.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

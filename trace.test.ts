@@ -188,3 +188,129 @@ test('getTrace serves timeline items with no capture hook or snapshot reads', as
     assert.equal(disposed, 1)
   } finally { hooks.deregister() }
 })
+
+test("tool text blocks are readable and reasoning previews omit markdown", () => {
+  const items = timeline([{ role: "assistant", parts: [
+    { type: "tool", tool: "read", state: { output: [{ type: "text", text: "line one\nline two" }] } },
+    { type: "reasoning", text: "**Inspecting** the file" },
+  ] }])
+  assert.match(items[0].body, /line one\nline two/)
+  assert.doesNotMatch(items[0].body, /"type": "text"/)
+  assert.equal(items[1].title, "Inspecting the file")
+})
+
+test("skill transport wrapper is stripped without losing contained markdown", () => {
+  const items = timeline([{ id: "a1", type: "assistant", parts: [
+    { type: "tool", tool: "skill", state: { input: { id: "screenshot" }, output: "<skill_content name=\"screenshot\">\n# Screenshot\n\nSome **bold** text\n</skill_content>" } },
+  ] }])
+  const skill = items.find((item) => item.kind === "skill")
+  assert.ok(skill)
+  assert.doesNotMatch(skill.body, /<skill_content/)
+  assert.match(skill.body, /# Screenshot/)
+  assert.match(skill.body, /Some \*\*bold\*\* text/)
+})
+
+test("skill detail renders as markdown without an outer fence", () => {
+  const items = timeline([{ id: "a1", type: "assistant", parts: [
+    { type: "tool", tool: "skill", state: { input: { id: "screenshot" }, output: "<skill_content name=\"screenshot\"># Screenshot\n\ntext</skill_content>" } },
+  ] }])
+  const md = panel.eventMarkdown(items[0])
+  assert.match(md, /# Screenshot/)
+  assert.doesNotMatch(md, /<skill_content/)
+  assert.match(md, /### Output\n\n# Screenshot/)
+  assert.doesNotMatch(md, /### Output\n\n```/)
+})
+
+test("tool output stays literal inside fenced sections with readable headers", () => {
+  const items = timeline([{ type: "assistant", parts: [
+    { type: "tool", tool: "shell", state: { input: { command: "ls" }, output: "# not a heading\nplain" } },
+  ] }])
+  const tool = items[0]
+  assert.match(tool.body, /### Input/)
+  assert.match(tool.body, /### Output/)
+  assert.match(tool.body, /```/)
+  const md = panel.eventMarkdown(tool)
+  assert.match(md, /# not a heading/)
+  assert.match(md, /```/)
+})
+
+test("skill wrapper stripping preserves siblings, quoted attrs, and malformed tags", () => {
+  const sibling = '<skill_content name="a">AAA</skill_content> middle <skill_content name="b">BBB</skill_content>'
+  const sibItems = timeline([{ id: "sib", type: "assistant", parts: [
+    { type: "tool", tool: "skill", state: { input: { id: "s" }, output: sibling } },
+  ] }])
+  const sib = sibItems.find((item: any) => item.kind === "skill")
+  assert.ok(sib.body.includes(sibling), "sibling wrappers must be preserved verbatim")
+  assert.ok(sib.body.includes('<skill_content name="a">AAA</skill_content>'))
+  assert.ok(sib.body.includes('<skill_content name="b">BBB</skill_content>'))
+
+  const quoted = timeline([{ id: "q", type: "assistant", parts: [
+    { type: "tool", tool: "skill", state: { input: { id: "s" }, output: '<skill_content name="a>b">hello</skill_content>' } },
+  ] }])
+  assert.match(quoted[0].body, /hello/)
+  assert.doesNotMatch(quoted[0].body, /b">hello/)
+
+  const malformed = '<skill_content name="x">oops no close'
+  const bad = timeline([{ id: "bad", type: "assistant", parts: [
+    { type: "tool", tool: "skill", state: { input: { id: "s" }, output: malformed } },
+  ] }])
+  assert.ok(bad[0].body.includes(malformed), "malformed wrapper must be preserved")
+
+  const nested = '<skill_content name="o"><skill_content name="i">deep</skill_content></skill_content>'
+  const nest = timeline([{ id: "n", type: "assistant", parts: [
+    { type: "tool", tool: "skill", state: { input: { id: "s" }, output: nested } },
+  ] }])
+  assert.match(nest[0].body, /deep/)
+  assert.doesNotMatch(nest[0].body, /<skill_content/)
+})
+
+test("content-block text with extra keys and escaped JSON decode only when safe", () => {
+  const withMeta = timeline([{ type: "assistant", parts: [
+    { type: "tool", tool: "read", state: { output: [{ type: "text", text: "hello blocks", extra: 1 }] } },
+  ] }])
+  assert.match(withMeta[0].body, /hello blocks/)
+  assert.doesNotMatch(withMeta[0].body, /"type": "text"/)
+
+  const escaped = timeline([{ type: "assistant", parts: [
+    { type: "tool", tool: "read", state: { output: JSON.stringify("# Escaped\nline") } },
+  ] }])
+  assert.match(escaped[0].body, /# Escaped\nline/)
+
+  const realJson = timeline([{ type: "assistant", parts: [
+    { type: "tool", tool: "read", state: { output: JSON.stringify({ foo: 1 }) } },
+  ] }])
+  assert.match(realJson[0].body, /"foo"/)
+})
+
+test('focus cues distinguish the active pane from the selection without relying on color', () => {
+  const { focusLabel, focusParts, selectionMarker, listPaneBorder, detailPaneBorder } = panel as any
+  assert.equal(typeof focusLabel, 'function')
+  assert.equal(focusLabel('list'), '[EVENTS | detail]')
+  assert.equal(focusLabel('detail'), '[events | DETAIL]')
+  assert.deepEqual(focusParts('list'), ['EVENTS', 'detail'])
+  assert.deepEqual(focusParts('detail'), ['events', 'DETAIL'])
+  assert.equal(selectionMarker('list'), '▶ ')
+  assert.equal(selectionMarker('detail'), '› ')
+  assert.notEqual(selectionMarker('list'), selectionMarker('detail'))
+  for (const narrow of [false, true]) {
+    for (const focus of ['list', 'detail']) {
+      const listSides = listPaneBorder(narrow, focus)
+      const detailSides = detailPaneBorder(narrow, focus)
+      assert.equal(listSides.length + detailSides.length, 1, `exactly one divider in narrow=${narrow} focus=${focus}`)
+    }
+  }
+  assert.deepEqual(listPaneBorder(false, 'list'), ['right'])
+  assert.deepEqual(detailPaneBorder(false, 'detail'), ['left'])
+  assert.deepEqual(listPaneBorder(true, 'list'), ['bottom'])
+  assert.deepEqual(detailPaneBorder(true, 'detail'), ['top'])
+})
+
+test('header keeps a single row by hiding the trailing key hint when it would overflow', () => {
+  const { headerFitsEscHint } = panel as any
+  assert.equal(typeof headerFitsEscHint, 'function')
+  assert.equal(headerFitsEscHint(120, 42, 'all'), true)
+  assert.equal(headerFitsEscHint(80, 42, 'all'), false)
+  assert.equal(headerFitsEscHint(80, 200, 'thinking'), false)
+  assert.equal(headerFitsEscHint(95, 200, 'thinking'), true)
+  assert.equal(headerFitsEscHint(50, 5, 'all'), false)
+})

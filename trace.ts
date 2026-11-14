@@ -1,12 +1,68 @@
 const badges: Record<string, string> = { skill: "SKILL", read: "READ", grep: "GREP", glob: "GREP", shell: "CLI", execute: "MCP/CODE", webfetch: "WEB", websearch: "WEB", subagent: "AGENT", question: "ASK" }
 const string = (value: any) => typeof value === "string" ? value : JSON.stringify(value ?? "", null, 2)
 const raw = (value: any) => typeof value === "string" ? value : value === undefined || value === null ? "" : JSON.stringify(value, null, 2)
+const isTextBlock = (block: any): block is { text: string } =>
+  !!block && typeof block === "object" && (block as any).type === "text" && typeof (block as any).text === "string"
+const stripOneSkillWrapper = (text: string): string | undefined => {
+  const open = /^\s*<skill_content\b((?:[^>"']|"[^"]*"|'[^']*')*)>/.exec(text)
+  if (!open) return undefined
+  const openEnd = open[0].length
+  const tag = /<skill_content\b(?:[^>"']|"[^"]*"|'[^']*')*>|<\/skill_content\s*>/g
+  tag.lastIndex = openEnd
+  let depth = 1
+  let match: RegExpExecArray | null
+  while ((match = tag.exec(text)) !== null) {
+    if (match[0].startsWith("</")) {
+      depth--
+      if (depth === 0) {
+        if (!/^\s*$/.test(text.slice(tag.lastIndex))) return undefined
+        return text.slice(openEnd, match.index)
+      }
+    } else {
+      depth++
+    }
+  }
+  return undefined
+}
+const stripSkillWrapper = (text: string): string => {
+  let current = text
+  for (let depth = 0; depth < 5; depth++) {
+    const stripped = stripOneSkillWrapper(current)
+    if (stripped === undefined) break
+    current = stripped
+  }
+  return current
+}
+const readable = (value: any): string => {
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    if (trimmed.length >= 2 && trimmed.startsWith('"')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed)
+        if (typeof parsed === "string") return stripSkillWrapper(parsed)
+      } catch { /* Preserve original payload when decoding is unsafe. */ }
+    }
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed)
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed.every(isTextBlock)) {
+          return stripSkillWrapper(parsed.map((block) => block.text).join("\n"))
+        }
+      } catch { /* Preserve unrecognized JSON verbatim. */ }
+    }
+    return stripSkillWrapper(value)
+  }
+  if (Array.isArray(value)) {
+    return stripSkillWrapper(value.map((block) => isTextBlock(block) ? block.text : raw(block)).join("\n"))
+  }
+  return raw(value)
+}
 const firstLine = (value: any, fallback: string): string => {
   const text = raw(value).replace(/\s+/g, " ").trim()
   return text || fallback
 }
 const preview = (value: string, width = 120): string => {
-  const chars = Array.from(value.replace(/\s+/g, " ").trim())
+  const chars = Array.from(value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/^#{1,6}\s+/, "").replace(/\s+/g, " ").trim())
   return chars.length > width ? `${chars.slice(0, width - 1).join("")}…` : chars.join("")
 }
 const prettyInput = (value: any, indent = ""): string => {
@@ -20,15 +76,37 @@ const prettyInput = (value: any, indent = ""): string => {
     return rendered.includes("\n") ? `${indent}${key}:\n${rendered}` : `${indent}${key}: ${rendered.replace(/^  /, "")}`
   }).join("\n")
 }
-const toolBody = (info: { input: any, output: string, error: any, status: any, duration: number | undefined, chars: number, estimatedTokens: number }) => {
-  const lines = []
-  if (info.input !== undefined) lines.push(`input:\n${prettyInput(info.input, "")}`)
-  lines.push(`output:\n${info.output || "(empty)"}`)
-  if (info.error) lines.push(`error:\n${raw(info.error)}`)
+const fenceFor = (...contents: string[]): string => {
+  let longest = 0
+  for (const content of contents) {
+    for (const run of content.match(/`+/g) ?? []) longest = Math.max(longest, run.length)
+  }
+  return "`".repeat(Math.max(3, longest + 1))
+}
+const toolBody = (info: { input: any, output: string, error: any, status: any, duration: number | undefined, chars: number, estimatedTokens: number }, kind?: string) => {
+  const isSkill = kind === "skill"
+  const sections: string[] = []
+  if (info.input !== undefined) {
+    const rendered = prettyInput(info.input, "")
+    const fence = fenceFor(rendered)
+    sections.push(`### Input\n\n${fence}text\n${rendered}\n${fence}`)
+  }
+  const outputText = info.output || "(empty)"
+  if (isSkill) {
+    sections.push(`### Output\n\n${outputText}`)
+  } else {
+    const fence = fenceFor(outputText)
+    sections.push(`### Output\n\n${fence}text\n${outputText}\n${fence}`)
+  }
+  if (info.error) {
+    const errorText = raw(info.error)
+    const fence = fenceFor(errorText)
+    sections.push(`### Error\n\n${fence}text\n${errorText}\n${fence}`)
+  }
   const meta = [`status: ${info.status ?? "unknown"}`, `chars: ${info.chars}`, `~tokens: ${info.estimatedTokens}`]
-  if (info.duration !== undefined) lines.push(`duration: ${info.duration}ms`)
-  lines.push(meta.join("  •  "))
-  return lines.join("\n\n")
+  if (info.duration !== undefined) meta.push(`duration: ${info.duration}ms`)
+  sections.push(`_${meta.join("  •  ")}_`)
+  return sections.join("\n\n")
 }
 const inputSummary = (tool: string, input: any): string | undefined => {
   if (typeof input === "string") return preview(input)
@@ -60,16 +138,16 @@ export function timeline(messages: any[]) {
         } else if (part.type === "tool") {
           const badge = badges[name] ?? "TOOL"
           const kind = badge === "SKILL" ? "skill" : "tool"
-          const output = string(part.state?.content ?? part.state?.output ?? part.text ?? "")
+          const output = readable(part.state?.content ?? part.state?.output ?? part.text ?? "")
           const start = part.time?.start ?? part.time?.ran ?? part.time?.created
           const end = part.time?.end ?? part.time?.completed
           const duration = typeof start === "number" && typeof end === "number" ? end - start : undefined
           const title = kind === "skill"
             ? String(part.state?.input?.id ?? name ?? "skill")
-            : preview(inputSummary(name, part.state?.input) ?? firstLine(part.state?.content ?? part.state?.output ?? part.text ?? "", name ?? "tool"))
+            : preview(inputSummary(name, part.state?.input) ?? firstLine(output, name ?? "tool"))
           const detail = string({ input: part.state?.input, output, error: part.state?.error, status: part.state?.status, duration, chars: output.length, estimatedTokens: Math.ceil(output.length / 4) })
           const error = part.state?.error, status = part.state?.status
-          const body = toolBody({ input: part.state?.input, output: raw(part.state?.content ?? part.state?.output ?? part.text ?? ""), error, status, duration, chars: output.length, estimatedTokens: Math.ceil(output.length / 4) })
+          const body = toolBody({ input: part.state?.input, output, error, status, duration, chars: output.length, estimatedTokens: Math.ceil(output.length / 4) }, kind)
           items.push({ id: `message:${id}:part:${part.id ?? partIndex}`, badge, title, detail, body, kind })
           emitted = true
         }

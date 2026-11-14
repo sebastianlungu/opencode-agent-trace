@@ -23,7 +23,14 @@ This is a local source installation, not an npm release. Do not load another cop
 
 Open a session and run `/trace`, or choose **Context Trace: Open Timeline** from the command palette.
 
-![Schematic: event list and detail are independent panes with a frozen filter header](assets/timeline.svg)
+![Real TUI with synthetic data: wide two-pane event list and detail](assets/trace-tui-authentic-wide.png)
+*Real TUI with synthetic data: wide layout with event list and detail side by side.*
+
+![Real TUI with synthetic data: filtered tool events with structured detail](assets/trace-tui-authentic-filter.png)
+*Real TUI with synthetic data: tool-only filter with command input, output, and status.*
+
+![Real TUI with synthetic data: narrow stacked layout](assets/trace-tui-authentic-narrow.png)
+*Real TUI with synthetic data: narrow terminal with list stacked above detail.*
 
 | Key | Action |
 | --- | --- |
@@ -34,11 +41,11 @@ Open a session and run `/trace`, or choose **Context Trace: Open Timeline** from
 | `PageUp` / `PageDown` | Scroll the detail pane |
 | `Esc` | Close the panel |
 
-The header is a frozen top bar with the event count and a compact filter bar. Each row shows an emoji, a badge, and a short preview (for example `🔧 READ — src/index.ts`); the badge appears once and the preview never repeats it. A filter shows only matching events. The focused pane is marked `●` in an accent color while the other shows `○` muted; the selected row keeps its `>` marker with full-strength text only while the list is focused. All colors come from the host theme with plain fallbacks, and rows carry text markers as well as color so nothing depends on color alone. The detail pane renders prose as markdown and tool input/output as structured text with real line breaks (never `\n` escapes); when markdown support is unavailable it falls back to plain text. On narrow terminals (under 80 columns) the list stacks above the detail pane. The list refreshes automatically while the panel is open.
+The header is a frozen top bar with the event count and a compact filter bar. Each row shows an emoji, a badge, and a short preview (for example `🔧 READ — src/index.ts`); the badge appears once and the preview never repeats it. A filter shows only matching events. It names the focused pane explicitly as `[EVENTS | detail]` or `[events | DETAIL]`: the active pane appears in uppercase at full strength while the inactive pane is lowercase and muted, so focus never depends on color alone. The divider between the panes is drawn in the theme's active border color on the focused pane's edge. The selected row keeps its highlight background in both panes but shows `▶` at full strength only while the list is focused and a muted `›` when detail is focused, keeping selection visible yet clearly subdued. All colors come from the host theme with plain fallbacks, and rows carry text and shape markers as well as color so nothing depends on color alone. The detail pane renders prose as markdown and tool input/output as structured text with real line breaks (never `\n` escapes); when markdown support is unavailable it falls back to plain text. On narrow terminals (under 80 columns) the list stacks above the detail pane. The list refreshes automatically while the panel is open.
 
 ## Privacy and limits
 
-- This version writes nothing: no captures, no snapshots, no background work, no network transmission. Trace data is whatever the connected OpenCode server already holds for the session, exposed through its RPC.
+- This version writes nothing: no captures, no snapshots, no background work, and the plugin itself makes no network calls. Viewing reads whatever the connected OpenCode server already holds for the session via its RPC; if that server is remote, the read travels over that existing connection.
 - Files from earlier versions remain under `~/.local/share/opencode/context-trace/` on the server host, including any sensitive content they hold. The plugin never reads, modifies, or deletes them. Protect backups and remove unwanted files manually.
 - Secure access to the OpenCode server: session messages can contain prompts, source code, tool outputs, personal information, and secrets.
 

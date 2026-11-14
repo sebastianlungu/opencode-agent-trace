@@ -1,6 +1,6 @@
 # Privacy, retention, and limitations
 
-**Session content can contain sensitive information. There is no redaction.** The event list shows the session's messages as returned by the OpenCode server: prompts, source code, tool outputs, personal information, or secrets. The plugin does not implement network transmission, but trace data is exposed through its OpenCode RPC interface, so access to the OpenCode server matters.
+**Session content can contain sensitive information. There is no redaction.** The event list shows the session's messages as returned by the OpenCode server: prompts, source code, tool outputs, personal information, or secrets. The plugin itself makes no network calls, but viewing fetches session data via its OpenCode RPC interface, so it travels over whatever transport the connected server uses (local or remote); secure access to the OpenCode server accordingly.
 
 ## No capture in this version
 

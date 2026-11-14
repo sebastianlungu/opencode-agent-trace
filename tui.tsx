@@ -2,7 +2,7 @@ import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import { createEffect, createSignal, onCleanup, Show, For } from "solid-js"
 import { ContextTraceRpc } from "./rpc"
 import { timeline } from "./trace"
-import { eventDetail, eventMarkdown, eventRow, eventTone, filterItems, selectionIndex, toggleFilter } from "./panel"
+import { detailPaneBorder, eventDetail, eventMarkdown, eventRow, eventTone, filterItems, focusParts, headerFitsEscHint, listPaneBorder, selectionIndex, selectionMarker, toggleFilter } from "./panel"
 import type { EventFilter } from "./panel"
 
 const filterHints = [
@@ -28,6 +28,10 @@ function themeColors(theme: any) {
     accent: pick(text.accent, current.accent, current.primary, "#c678dd"),
     secondary: pick(text.secondary, current.secondary, muted),
     headerBg: pick(background.element, background.panel, current.backgroundElement, current.backgroundPanel, "#232634"),
+    selectedBg: pick(background.selected, current.backgroundMenu, current.backgroundElement, "#394353"),
+    border: pick(current.border, muted),
+    borderActive: pick(current.borderActive, current.accent, "#c678dd"),
+    borderSubtle: pick(current.borderSubtle, current.border, muted),
   }
 }
 
@@ -43,10 +47,21 @@ function ContextTracePanel(props: { panel: any }) {
   let detail: any
   let listBox: any
   let request = 0
-  void import("@opentui/core").then((opentui) => {
-    try { setSyntax(opentui.SyntaxStyle.fromStyles({ default: { fg: colors().base } }, (context.renderer as any)?.nativeScene)) }
-    catch { /* Markdown falls back to plain text. */ }
-  }).catch(() => { /* Markdown falls back to plain text. */ })
+  void (async () => {
+    const owner = (context.renderer as any)?.nativeScene
+    try {
+      const themeModule = await import("@opencode/theme/tui") as any
+      const theme = (context as any).theme
+      if (typeof themeModule?.generateSyntax === "function" && theme) {
+        setSyntax(themeModule.generateSyntax(theme, owner))
+        return
+      }
+    } catch { /* Fall through to minimal SyntaxStyle below. */ }
+    try {
+      const opentui = await import("@opentui/core")
+      setSyntax(opentui.SyntaxStyle.fromStyles({ default: { fg: colors().base } }, owner))
+    } catch { /* Markdown falls back to plain text. */ }
+  })()
   const applyTrace = (next: any) => {
     setEventID(next.items[selectionIndex(next.items, eventID(), 0)]?.id)
     setTrace(next)
@@ -121,36 +136,50 @@ function ContextTracePanel(props: { panel: any }) {
   ]
   context.keymap.layer(() => ({ commands }))
   const item = () => visibleEvents()[selectionIndex(visibleEvents(), eventID(), 0)]
-  const filterName = () => filterHints.find(({ filter: key }) => key === filter())?.label ?? "all"
   const panelWidth = () => { const width = (props.panel as any).width; return typeof width === "function" ? width() : width ?? 120 }
   const narrow = () => panelWidth() < 80
+  const roomy = () => panelWidth() >= 80
+  const cozy = () => panelWidth() >= 50
+  const listFocused = () => focus() === "list"
+  const headerFilter = () => filter() ?? "all"
+  const paneNames = () => focusParts(focus())
+  const shortLabel = (label: string) => (label === "assistant text" ? "text" : label === "thinking" ? "think" : label)
   const eventBody = () => eventDetail(item())
   const eventMd = () => eventMarkdown(item())
-  const listFocused = () => focus() === "list"
   const rowWidth = () => Math.max(24, Math.floor((narrow() ? panelWidth() : panelWidth() * 0.35) - 4))
+  const listBorder = () => { const sides = listPaneBorder(narrow(), focus()); return sides.length ? sides : undefined }
+  const detailBorder = () => { const sides = detailPaneBorder(narrow(), focus()); return sides.length ? sides : undefined }
   return <box flexDirection="column" width="100%" height="100%">
-    <box flexDirection="column" width="100%" backgroundColor={colors().headerBg}>
-      <text fg={colors().base}>Context Trace — {visibleEvents().length} events • {filterName()} • left/right focus • up/down move • esc closes</text>
-      <box flexDirection="row" width="100%">
-        <text fg={colors().muted}>Filter: </text>
-        <For each={filterHints}>{({ bind, filter: key, label }) => <text fg={filter() === key ? colors().accent : colors().muted}>{filter() === key ? `<${bind} ${label}> ` : `${bind} ${label} `}</text>}</For>
-        <text fg={filter() === undefined ? colors().accent : colors().muted}>{filter() === undefined ? "<c all>" : "c all"}</text>
+    <box flexDirection="column" width="100%" flexShrink={0} backgroundColor={colors().headerBg} border={["bottom"]} borderStyle="single" borderColor={colors().borderSubtle}>
+      <box flexDirection="row" width="100%" height={1}>
+        <text fg={colors().base}>Trace {visibleEvents().length} {headerFilter()} </text>
+        <text fg={colors().muted}>[</text>
+        <text fg={listFocused() ? colors().base : colors().muted}>{paneNames()[0]}</text>
+        <text fg={colors().muted}> | </text>
+        <text fg={listFocused() ? colors().muted : colors().base}>{paneNames()[1]}</text>
+        <text fg={colors().muted}>] </text>
+        <Show when={cozy()}>
+          <text fg={colors().muted}>• </text>
+          <For each={filterHints}>{({ bind, filter: key, label }) => <text fg={filter() === key ? colors().accent : colors().muted}>{filter() === key ? `<${bind}${roomy() ? ` ${shortLabel(label)}` : ""}> ` : `${bind}${roomy() ? ` ${shortLabel(label)}` : ""} `}</text>}</For>
+          <text fg={filter() === undefined ? colors().accent : colors().muted}>{filter() === undefined ? `<c${roomy() ? " all" : ""}> ` : `c${roomy() ? " all" : ""} `}</text>
+        </Show>
+        <Show when={roomy() && headerFitsEscHint(panelWidth(), visibleEvents().length, headerFilter())}><text fg={colors().muted}>• ←→ ↑↓ esc</text></Show>
       </box>
     </box>
     <Show when={error()}><text>{error()}</text></Show>
     <For each={trace().warnings}>{(warning: string) => <text>{warning}</text>}</For>
     <Show when={!visibleEvents().length}><text fg={colors().muted}>{trace().items.length ? `No events match this filter — press c to show all.` : `No events yet.`}</text></Show>
     <box flexDirection={narrow() ? "column" : "row"} flexGrow={1} minHeight={0}>
-      <box flexDirection="column" width={narrow() ? "100%" : "35%"} height={narrow() ? "40%" : "100%"}>
-        <text fg={listFocused() ? colors().accent : colors().muted}>{listFocused() ? `● EVENTS (${visibleEvents().length})` : `○ EVENTS (${visibleEvents().length})`}</text>
+      <box flexDirection="column" width={narrow() ? "100%" : "35%"} height={narrow() ? "40%" : "100%"} minHeight={0} border={listBorder()} borderStyle="single" borderColor={colors().borderActive}>
         <scrollbox ref={listBox} width="100%" flexGrow={1} minHeight={0}><For each={visibleEvents()}>{(entry: any) => {
           const selected = () => entry.id === eventID()
-          return <text id={`evt:${entry.id}`} height={1} fg={selected() ? (listFocused() ? colors().base : colors().muted) : toneColor(eventTone(entry.kind))}>{selected() ? "> " : "  "}{eventRow(entry, rowWidth())}</text>
+          return <box id={`evt:${entry.id}`} width="100%" height={1} backgroundColor={selected() ? colors().selectedBg : undefined} onMouseDown={() => { setEventID(entry.id); setFocus("list") }}>
+            <text fg={selected() ? (listFocused() ? colors().base : colors().muted) : toneColor(eventTone(entry.kind))}>{selected() ? selectionMarker(focus()) : "  "}{eventRow(entry, rowWidth())}</text>
+          </box>
         }}</For></scrollbox>
       </box>
-      <box flexDirection="column" width={narrow() ? "100%" : "65%"} height={narrow() ? "60%" : "100%"}>
-        <text fg={listFocused() ? colors().muted : colors().accent}>{listFocused() ? `○ DETAIL` : `● DETAIL`}</text>
-        <scrollbox ref={detail} width="100%" flexGrow={1} minHeight={0}>
+      <box flexDirection="column" width={narrow() ? "100%" : "65%"} height={narrow() ? "60%" : "100%"} minHeight={0} border={detailBorder()} borderStyle="single" borderColor={colors().borderActive}>
+        <scrollbox ref={detail} width="100%" flexGrow={1} minHeight={0} onMouseDown={() => setFocus("detail")}>
           <Show when={syntax()} fallback={<text>{eventBody()}</text>}>
             <markdown content={eventMd()} syntaxStyle={syntax()} />
           </Show>

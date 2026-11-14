@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" role="img" aria-labelledby="title desc">
   <title id="title">OpenCode Agent Trace</title>
-  <desc id="desc">A sequence of connected event and snapshot markers represents an agent trace.</desc>
+  <desc id="desc">A sequence of connected event markers represents an agent trace.</desc>
   <rect width="1200" height="260" rx="14" fill="#151b20"/>
   <path d="M790 60v140M880 60v140M970 60v140M1060 60v140M750 85h360M750 130h360M750 175h360" stroke="#2a343b" stroke-width="1"/>
   <path d="M775 172h85V98h85v48h85V78h54" fill="none" stroke="#8ad6bd" stroke-width="3"/>

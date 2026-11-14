@@ -1,24 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 290" role="img" aria-labelledby="title desc">
   <title id="title">How the trace panel is organized</title>
-  <desc id="desc">Events and snapshots are independent lists. A selected snapshot can be inspected as a delta, context, or system and tools.</desc>
+  <desc id="desc">Event list and detail are independent panes with a frozen filter header.</desc>
   <rect width="1200" height="290" rx="12" fill="#151b20"/>
   <text x="38" y="40" fill="#b2c1c1" font-family="system-ui, sans-serif" font-size="15" font-weight="600" letter-spacing="2">PANEL SCHEMATIC</text>
   <text x="38" y="90" fill="#f3f5f2" font-family="system-ui, sans-serif" font-size="22" font-weight="700">Events</text>
   <path d="M51 111v110" stroke="#52656a" stroke-width="2"/>
   <circle cx="51" cy="121" r="5" fill="#8ad6bd"/><circle cx="51" cy="165" r="5" fill="#8ad6bd"/><circle cx="51" cy="209" r="5" fill="#8ad6bd"/>
   <text x="72" y="128" fill="#dce7e2" font-family="monospace" font-size="18">USER</text>
-  <text x="72" y="172" fill="#dce7e2" font-family="monospace" font-size="18">STEP</text>
-  <text x="72" y="216" fill="#dce7e2" font-family="monospace" font-size="18">TOOL</text>
+  <text x="72" y="172" fill="#dce7e2" font-family="monospace" font-size="18">THINK</text>
+  <text x="72" y="216" fill="#dce7e2" font-family="monospace" font-size="18">READ</text>
   <path d="M288 70v180" stroke="#39464b"/>
-  <text x="326" y="90" fill="#f3f5f2" font-family="system-ui, sans-serif" font-size="22" font-weight="700">Snapshots</text>
+  <text x="326" y="90" fill="#f3f5f2" font-family="system-ui, sans-serif" font-size="22" font-weight="700">Detail</text>
   <rect x="326" y="111" width="230" height="45" rx="5" fill="#263a36" stroke="#8ad6bd"/>
-  <text x="344" y="140" fill="#dce7e2" font-family="monospace" font-size="16">selected capture</text>
+  <text x="344" y="140" fill="#dce7e2" font-family="monospace" font-size="16">selected event</text>
   <rect x="326" y="170" width="230" height="45" rx="5" fill="#202a2f"/>
-  <text x="344" y="199" fill="#aebcbb" font-family="monospace" font-size="16">another capture</text>
+  <text x="344" y="199" fill="#aebcbb" font-family="monospace" font-size="16">full input / output</text>
   <path d="M556 133h100" stroke="#8ad6bd" stroke-width="2"/><path d="m648 127 8 6-8 6" fill="none" stroke="#8ad6bd" stroke-width="2"/>
-  <text x="691" y="90" fill="#f3f5f2" font-family="system-ui, sans-serif" font-size="22" font-weight="700">Snapshot views</text>
-  <text x="691" y="132" fill="#dce7e2" font-family="monospace" font-size="18">2  delta</text>
-  <text x="691" y="175" fill="#dce7e2" font-family="monospace" font-size="18">3  context</text>
-  <text x="691" y="218" fill="#dce7e2" font-family="monospace" font-size="18">4  system / tools</text>
-  <text x="38" y="267" fill="#b2c1c1" font-family="system-ui, sans-serif" font-size="15">Events and snapshots are selected independently.</text>
+  <text x="691" y="90" fill="#f3f5f2" font-family="system-ui, sans-serif" font-size="22" font-weight="700">Filter and focus</text>
+  <text x="691" y="132" fill="#dce7e2" font-family="monospace" font-size="18">s skills · t thinking</text>
+  <text x="691" y="175" fill="#dce7e2" font-family="monospace" font-size="18">o tools · e user · a text</text>
+  <text x="691" y="218" fill="#dce7e2" font-family="monospace" font-size="18">arrow keys move and focus</text>
+  <text x="38" y="267" fill="#b2c1c1" font-family="system-ui, sans-serif" font-size="15">Event list and detail are independent panes.</text>
 </svg>

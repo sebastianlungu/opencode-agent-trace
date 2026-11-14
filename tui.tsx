@@ -1,45 +1,54 @@
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import { createEffect, createSignal, onCleanup, Show, For } from "solid-js"
 import { ContextTraceRpc } from "./rpc"
-import { panelContent, selectionIndex } from "./panel"
+import { timeline } from "./trace"
+import { eventDetail, eventMarkdown, eventRow, eventTone, filterItems, selectionIndex, toggleFilter } from "./panel"
+import type { EventFilter } from "./panel"
+
+const filterHints = [
+  { bind: "s", filter: "skill", label: "skills" },
+  { bind: "t", filter: "thinking", label: "thinking" },
+  { bind: "o", filter: "tool", label: "tools" },
+  { bind: "e", filter: "user", label: "user" },
+  { bind: "a", filter: "text", label: "assistant text" },
+] as const
+
+function themeColors(theme: any) {
+  const text = theme?.text ?? {}
+  const current = theme?.current ?? {}
+  const background = theme?.background ?? {}
+  const pick = (...values: any[]) => values.find((value) => value !== undefined && value !== null)
+  const base = pick(text.base, current.text, "#ffffff")
+  const muted = pick(text.muted, current.textMuted, "#808080")
+  return {
+    base,
+    muted,
+    info: pick(text.info, current.info, "#4aa8ff"),
+    warning: pick(text.warning, current.warning, "#e5c07b"),
+    accent: pick(text.accent, current.accent, current.primary, "#c678dd"),
+    secondary: pick(text.secondary, current.secondary, muted),
+    headerBg: pick(background.element, background.panel, current.backgroundElement, current.backgroundPanel, "#232634"),
+  }
+}
 
 function ContextTracePanel(props: { panel: any }) {
   const context = usePlugin()
-  const [trace, setTrace] = createSignal<any>({ items: [], snapshots: [], warnings: [] })
+  const colors = () => themeColors((context as any).theme)
+  const [trace, setTrace] = createSignal<any>({ items: [], warnings: [] })
   const [eventID, setEventID] = createSignal<string>()
-  const [snapshotID, setSnapshotID] = createSignal<string>()
-  const [loadedSnapshot, setLoadedSnapshot] = createSignal<any>()
-  const [snapshotWarnings, setSnapshotWarnings] = createSignal<string[]>([])
-  const [list, setList] = createSignal<"events" | "snapshots">("events")
-  const [view, setView] = createSignal(1)
+  const [filter, setFilter] = createSignal<EventFilter>(undefined)
+  const [focus, setFocus] = createSignal<"list" | "detail">("list")
+  const [syntax, setSyntax] = createSignal<any>()
   const [error, setError] = createSignal("")
   let detail: any
   let listBox: any
   let request = 0
-  let snapshotRequest = 0
-  let snapshotLoading = false
-  let pendingSnapshot: { id: string, request: number } | undefined
-  const loadSnapshot = async () => {
-    if (snapshotLoading) return
-    snapshotLoading = true
-    while (pendingSnapshot) {
-      const current = pendingSnapshot
-      pendingSnapshot = undefined
-      try {
-        const result: any = await context.client.rpc(ContextTraceRpc).getSnapshot({ sessionID: props.panel.sessionID, snapshotID: current.id })
-        if (current.request !== snapshotRequest) continue
-        const loaded = result.data ?? result
-        setLoadedSnapshot(loaded.snapshot)
-        setSnapshotWarnings(loaded.warnings)
-      } catch {
-        if (current.request === snapshotRequest) setSnapshotWarnings(["Unable to load selected snapshot."])
-      }
-    }
-    snapshotLoading = false
-  }
+  void import("@opentui/core").then((opentui) => {
+    try { setSyntax(opentui.SyntaxStyle.fromStyles({ default: { fg: colors().base } }, (context.renderer as any)?.nativeScene)) }
+    catch { /* Markdown falls back to plain text. */ }
+  }).catch(() => { /* Markdown falls back to plain text. */ })
   const applyTrace = (next: any) => {
     setEventID(next.items[selectionIndex(next.items, eventID(), 0)]?.id)
-    setSnapshotID(next.snapshots[selectionIndex(next.snapshots, snapshotID(), 0)]?.id)
     setTrace(next)
   }
   const refresh = async () => {
@@ -52,66 +61,101 @@ function ContextTracePanel(props: { panel: any }) {
     } catch (cause) {
       if (current !== request) return
       const messages = context.data.session.message.list(props.panel.sessionID) ?? []
-      applyTrace({ snapshots: [], warnings: [], items: messages.map((message: any, index: number) => ({ id: `message:${message.id ?? `position:${index}`}`, badge: message.type ?? message.role ?? "MESSAGE", title: message.id, detail: JSON.stringify(message, null, 2) })) })
+      applyTrace({ warnings: [], items: timeline(messages as any[]) })
       setError(`RPC unavailable: ${String(cause)}`)
     }
   }
   void refresh()
-  const stop = context.client.rpc(ContextTraceRpc).events.on("snapshotCaptured", (event: any) => {
-    if (event.data.sessionID === props.panel.sessionID) void refresh()
-  })
-  onCleanup(() => { request++; snapshotRequest++; pendingSnapshot = undefined; stop() })
+  const timer = setInterval(() => { void refresh() }, 2000)
+  onCleanup(() => { request++; clearInterval(timer); try { const style = syntax(); if (style) void context.renderer.idle().then(() => style.destroy()) } catch { /* Renderer teardown is best-effort. */ } })
+  const visibleEvents = () => filterItems(trace().items, filter())
   createEffect(() => {
-    const id = snapshotID()
-    const currentTrace = trace()
-    const current = ++snapshotRequest
-    pendingSnapshot = undefined
-    setLoadedSnapshot(undefined)
-    setSnapshotWarnings([])
-    if (!id || !currentTrace.snapshots.some((entry: any) => entry.id === id)) return
-    pendingSnapshot = { id, request: current }
-    void loadSnapshot()
+    const visible = visibleEvents()
+    if (!visible.length || visible.some((entry) => entry.id === eventID())) return
+    setEventID(visible[0].id)
   })
-  const entries = () => list() === "events" ? trace().items : trace().snapshots
-  const selected = () => list() === "events" ? eventID() : snapshotID()
-  const index = () => selectionIndex(entries(), selected(), 0)
-  createEffect(() => { listBox?.scrollTo(Math.max(0, index())) })
+  const index = () => selectionIndex(visibleEvents(), eventID(), 0)
+  // Nearest-edge scrolling only: no-op while the selected row is already visible.
+  createEffect(() => {
+    const id = eventID()
+    if (!id || !listBox) return
+    try { listBox.scrollChildIntoView(`evt:${id}`) }
+    catch { /* Older renderers ignore per-row scrolling; selection still updates. */ }
+  })
+  createEffect(() => {
+    // New content starts at the top when the selection changes.
+    if (eventID() && detail) { try { detail.scrollTo(0) } catch { /* Scroll reset is best-effort. */ } }
+  })
   const move = (delta: number) => {
-    const next = selectionIndex(entries(), selected(), delta)
-    if (next < 0) return
-    if (list() === "events") setEventID(entries()[next].id)
-    else setSnapshotID(entries()[next].id)
-    listBox?.scrollTo(next)
+    if (focus() !== "list") { try { detail?.scrollBy(delta) } catch { /* Detail scroll is best-effort. */ } return }
+    const visible = visibleEvents()
+    const next = selectionIndex(visible, eventID(), delta)
+    if (next >= 0) setEventID(visible[next].id)
   }
-  const switchList = () => {
-    setList((value) => value === "events" ? "snapshots" : "events")
-    listBox?.scrollTo(Math.max(0, index()))
+  const toneColor = (tone: string) => {
+    const palette = colors()
+    switch (tone) {
+      case "info": return palette.info
+      case "warning": return palette.warning
+      case "accent": return palette.accent
+      case "secondary": return palette.secondary
+      case "muted": return palette.muted
+      case "text": return palette.base
+      default: return palette.base
+    }
   }
   const commands = [
-    { bind: "j", run: () => move(1) },
-    { bind: "down", run: () => move(1) },
-    { bind: "k", run: () => move(-1) },
     { bind: "up", run: () => move(-1) },
-    { bind: "tab", run: switchList },
-    ...["1", "2", "3", "4"].map((key) => ({ bind: key, run: () => setView(Number(key)) })),
-    ...["d", "pagedown"].map((bind) => ({ bind, run: () => detail?.scrollBy(10) })),
-    ...["u", "pageup"].map((bind) => ({ bind, run: () => detail?.scrollBy(-10) })),
-    { bind: "f", run: () => props.panel.toggleFullscreen() },
-    { bind: "r", run: () => void refresh() },
-    ...["q", "escape"].map((bind) => ({ bind, run: () => props.panel.close() })),
+    { bind: "k", run: () => move(-1) },
+    { bind: "down", run: () => move(1) },
+    { bind: "j", run: () => move(1) },
+    { bind: "left", run: () => setFocus("list") },
+    { bind: "h", run: () => setFocus("list") },
+    { bind: "right", run: () => setFocus("detail") },
+    { bind: "l", run: () => setFocus("detail") },
+    { bind: "pageup", run: () => { try { detail?.scrollBy(-10) } catch { /* Detail scroll is best-effort. */ } } },
+    { bind: "pagedown", run: () => { try { detail?.scrollBy(10) } catch { /* Detail scroll is best-effort. */ } } },
+    ...filterHints.map(({ bind, filter: key }) => ({ bind, run: () => setFilter((current) => toggleFilter(current, key as Exclude<EventFilter, undefined>)) })),
+    { bind: "c", run: () => setFilter(undefined) },
+    { bind: "escape", run: () => props.panel.close() },
   ]
   context.keymap.layer(() => ({ commands }))
-  const item = () => trace().items[selectionIndex(trace().items, eventID(), 0)]
-  const content = () => panelContent(view(), item(), loadedSnapshot())
+  const item = () => visibleEvents()[selectionIndex(visibleEvents(), eventID(), 0)]
+  const filterName = () => filterHints.find(({ filter: key }) => key === filter())?.label ?? "all"
+  const panelWidth = () => { const width = (props.panel as any).width; return typeof width === "function" ? width() : width ?? 120 }
+  const narrow = () => panelWidth() < 80
+  const eventBody = () => eventDetail(item())
+  const eventMd = () => eventMarkdown(item())
+  const listFocused = () => focus() === "list"
+  const rowWidth = () => Math.max(24, Math.floor((narrow() ? panelWidth() : panelWidth() * 0.35) - 4))
   return <box flexDirection="column" width="100%" height="100%">
-    <text fg={context.theme.text.base}>Context Trace — Tab events/snapshots • j/k select • u/d detail • 1 event • 2 delta • 3 context • 4 system/tools • r refresh • f fullscreen • q close</text>
+    <box flexDirection="column" width="100%" backgroundColor={colors().headerBg}>
+      <text fg={colors().base}>Context Trace — {visibleEvents().length} events • {filterName()} • left/right focus • up/down move • esc closes</text>
+      <box flexDirection="row" width="100%">
+        <text fg={colors().muted}>Filter: </text>
+        <For each={filterHints}>{({ bind, filter: key, label }) => <text fg={filter() === key ? colors().accent : colors().muted}>{filter() === key ? `<${bind} ${label}> ` : `${bind} ${label} `}</text>}</For>
+        <text fg={filter() === undefined ? colors().accent : colors().muted}>{filter() === undefined ? "<c all>" : "c all"}</text>
+      </box>
+    </box>
     <Show when={error()}><text>{error()}</text></Show>
     <For each={trace().warnings}>{(warning: string) => <text>{warning}</text>}</For>
-    <For each={snapshotWarnings()}>{(warning: string) => <text>{warning}</text>}</For>
-    <text>Browsing {list()} — event and snapshot selections are independent; no association is inferred.</text>
-    <box flexDirection="row" flexGrow={1} minHeight={0}>
-      <scrollbox ref={listBox} width="35%" height="100%"><For each={entries()}>{(entry: any, row) => <text height={1} fg={row() === index() ? context.theme.text.base : context.theme.text.muted}>{row() === index() ? "> " : "  "}{entry.child ? "  " : ""}{list() === "events" ? `[${entry.badge}] ${entry.title}` : `[SNAPSHOT] ${new Date(entry.timestamp).toISOString()} ${entry.id}`}</text>}</For></scrollbox>
-      <scrollbox ref={detail} width="65%" height="100%"><text>{content()}</text></scrollbox>
+    <Show when={!visibleEvents().length}><text fg={colors().muted}>{trace().items.length ? `No events match this filter — press c to show all.` : `No events yet.`}</text></Show>
+    <box flexDirection={narrow() ? "column" : "row"} flexGrow={1} minHeight={0}>
+      <box flexDirection="column" width={narrow() ? "100%" : "35%"} height={narrow() ? "40%" : "100%"}>
+        <text fg={listFocused() ? colors().accent : colors().muted}>{listFocused() ? `● EVENTS (${visibleEvents().length})` : `○ EVENTS (${visibleEvents().length})`}</text>
+        <scrollbox ref={listBox} width="100%" flexGrow={1} minHeight={0}><For each={visibleEvents()}>{(entry: any) => {
+          const selected = () => entry.id === eventID()
+          return <text id={`evt:${entry.id}`} height={1} fg={selected() ? (listFocused() ? colors().base : colors().muted) : toneColor(eventTone(entry.kind))}>{selected() ? "> " : "  "}{eventRow(entry, rowWidth())}</text>
+        }}</For></scrollbox>
+      </box>
+      <box flexDirection="column" width={narrow() ? "100%" : "65%"} height={narrow() ? "60%" : "100%"}>
+        <text fg={listFocused() ? colors().muted : colors().accent}>{listFocused() ? `○ DETAIL` : `● DETAIL`}</text>
+        <scrollbox ref={detail} width="100%" flexGrow={1} minHeight={0}>
+          <Show when={syntax()} fallback={<text>{eventBody()}</text>}>
+            <markdown content={eventMd()} syntaxStyle={syntax()} />
+          </Show>
+        </scrollbox>
+      </box>
     </box>
   </box>
 }

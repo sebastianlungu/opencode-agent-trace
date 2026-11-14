@@ -1,253 +1,73 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, rmdir, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import { capture, createCaptureQueue, defaultMaxBytes, maxBytesOption, snapshotFor, snapshotsFor, timeline } from './trace.ts'
+import { timeline } from './trace.ts'
 import * as panel from './panel.ts'
 
-test('snapshot list contains metadata only and selected context is loaded separately', async () => {
-  const trace = await import('./trace.ts')
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  await capture(root, event('private first'), async () => {}, { report: (message) => reports.push(message) })
-  await new Promise((resolve) => setTimeout(resolve, 5))
-  await capture(root, event('private second'), async () => {}, { report: (message) => reports.push(message) })
-  const { snapshots } = await trace.snapshotsFor(root, 'ses_test')
-  assert.doesNotMatch(JSON.stringify(snapshots), /private/)
-  const loaded = await (trace as any).snapshotFor(root, 'ses_test', snapshots[1].id)
-  assert.equal(loaded.snapshot.messages[0].text, 'private second')
-  assert.equal(loaded.snapshot.deltaMessages[0].text, 'private second')
-  assert.deepEqual(reports, [])
+const assistantWithParts = (parts: any[]) => ({ id: 'a1', type: 'assistant', parts })
+
+test('timeline has no step rows; every item carries a filter kind', () => {
+  const items = timeline([
+    { id: 'u1', type: 'user', text: 'hello' },
+    assistantWithParts([
+      { type: 'text', text: 'prose here' },
+      { type: 'reasoning', text: 'thinking here' },
+      { type: 'tool', tool: 'read', state: { input: { path: 'a.ts' }, output: 'ok' } },
+    ]),
+  ])
+  assert.ok(items.length > 0)
+  assert.ok(items.every((item: any) => typeof item.id === 'string' && typeof item.badge === 'string' && typeof item.title === 'string' && typeof item.detail === 'string'))
+  assert.ok(!items.some((item: any) => item.kind === 'step' || /^STEP/.test(item.badge)))
+  assert.ok(items.every((item: any) => ['user', 'text', 'thinking', 'skill', 'tool', 'other'].includes(item.kind)))
 })
 
-const event = (text: string) => ({ sessionID: 'ses_test', agent: 'test', model: { id: 'model' }, options: {}, system: [{ text: 'synthetic system' }], tools: { read: { description: 'synthetic tool', input: {} } }, messages: [{ id: 'msg_1', text }] })
-const sessionDirectory = async (root: string) => join(root, (await readdir(root)).find((name) => name.startsWith('session-'))!)
-const loadAll = async (root: string, id: string) => Promise.all((await snapshotsFor(root, id)).snapshots.map(async (entry) => (await snapshotFor(root, id, entry.id)).snapshot))
-
-test('shutdown discards queued captures and waits for the active notification', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  let started!: () => void, release!: () => void
-  const entered = new Promise<void>((resolve) => { started = resolve })
-  const blocked = new Promise<void>((resolve) => { release = resolve })
-  let notifications = 0, closed = false
-  const queue = createCaptureQueue(root, async () => { notifications++; started(); await blocked }, { report: (message) => reports.push(message) })
-  queue(event('active'))
-  await entered
-  queue(event('pending'))
-  const closing = queue.close().then(() => { closed = true })
-  queue(event('after shutdown'))
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  assert.equal(closed, false)
-  release()
-  await closing
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  assert.equal(notifications, 1)
-  assert.deepEqual((await loadAll(root, 'ses_test')).map((item) => item.messages[0].text), ['active'])
-  assert.deepEqual(reports, [])
+test('timeline titles are previews, never a bare badge repeat', () => {
+  const items = timeline([
+    assistantWithParts([
+      { type: 'reasoning', text: 'first thought\nsecond thought' },
+      { type: 'tool', tool: 'question', state: { input: { question: 'Which file?' }, output: 'a.ts' } },
+      { type: 'tool', tool: 'read', state: { input: { path: 'src/index.ts' }, output: 'content' } },
+      { type: 'tool', tool: 'skill', state: { input: { id: 'my-skill' }, output: 'done' } },
+    ]),
+  ])
+  const byBadge = Object.fromEntries(items.map((item: any) => [item.badge, item]))
+  assert.match(byBadge.THINK.title, /first thought/)
+  assert.doesNotMatch(byBadge.THINK.title, /^THINK$/i)
+  assert.match(byBadge.ASK.title, /Which file\?/)
+  assert.doesNotMatch(byBadge.ASK.title, /^question$/i)
+  assert.match(byBadge.READ.title, /src\/index\.ts/)
+  assert.equal(byBadge.SKILL.title, 'my-skill')
+  assert.equal(byBadge.SKILL.kind, 'skill')
 })
 
-test('concurrent shutdown before the scheduled drain discards everything', async () => {
-  const reports: string[] = []
-  const root = join(await mkdtemp(join(tmpdir(), 'trace-test-')), 'absent')
-  const queue = createCaptureQueue(root, async () => assert.fail(), { report: (message) => reports.push(message) })
-  queue(event('pending'))
-  await Promise.all([queue.close(), queue.close()])
-  queue(new Proxy({}, { get: () => { throw new Error('event accessed') } }))
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  await assert.rejects(stat(root), { code: 'ENOENT' })
-  assert.deepEqual(reports, [])
+test('timeline keeps session order and covers empty or unknown content', () => {
+  const items = timeline([
+    { id: 'one', type: 'user', text: 'first' },
+    { id: 'two', type: 'assistant', parts: [] },
+  ])
+  assert.deepEqual(items.map((item: any) => item.badge), ['USER', 'OTHER'])
+  assert.equal(items[0].kind, 'user')
+  assert.equal(items[1].kind, 'other')
 })
 
-test('concurrent shutdown waits for a capture blocked on the disk lock', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  await mkdir(join(root, '.capture-lock'))
-  const queue = createCaptureQueue(root, async () => {}, { report: (message) => reports.push(message) })
-  queue(event('active'))
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  queue(event('pending'))
-  let completed = 0
-  const closings = [queue.close().then(() => completed++), queue.close().then(() => completed++)]
-  await new Promise<void>((resolve) => setTimeout(resolve, 30))
-  assert.equal(completed, 0)
-  await rmdir(join(root, '.capture-lock'))
-  await Promise.all(closings)
-  assert.equal(completed, 2)
-  assert.deepEqual((await loadAll(root, 'ses_test')).map((item) => item.messages[0].text), ['active'])
-  assert.deepEqual(reports, [])
+test('timeline survives non-array assistant content without crashing', () => {
+  const fromString: any[] = timeline([{ id: 's1', type: 'assistant', content: 'plain string reply' } as any])
+  assert.equal(fromString.length, 1)
+  assert.equal(fromString[0].kind, 'text')
+  assert.match(fromString[0].title, /plain string reply/)
+  const fromMissing: any[] = timeline([{ id: 's2', type: 'assistant' } as any])
+  assert.equal(fromMissing.length, 1)
+  assert.equal(fromMissing[0].kind, 'other')
+  const fromObject: any[] = timeline([{ id: 's3', type: 'assistant', content: { text: 'oops' } } as any])
+  assert.equal(fromObject.length, 1)
+  assert.equal(fromObject[0].kind, 'other')
 })
 
-test('plugin unload closes captures before disposing hook and RPC registrations', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'trace-plugin-'))
-  const { registerHooks } = await import('node:module')
-  const stub = (source: string) => `data:text/javascript,${encodeURIComponent(source)}`
-  const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
-    if (specifier === '@opencode/plugin') return { url: stub('export const Plugin = { define: (value) => value }'), shortCircuit: true }
-    if (specifier === './rpc') return { url: stub('export const ContextTraceRpc = {}'), shortCircuit: true }
-    if (specifier === 'node:os' && context.parentURL?.endsWith('/server.ts')) return { url: stub(`export const homedir = () => ${JSON.stringify(root)}`), shortCircuit: true }
-    if (specifier === './trace') return nextResolve('./trace.ts', context)
-    return nextResolve(specifier, context)
-  } })
-  try {
-    const plugin = (await import('./server.ts')).default
-    let hook!: (event: any) => Promise<void>, release!: () => void, started!: () => void
-    const entered = new Promise<void>((resolve) => { started = resolve })
-    const blocked = new Promise<void>((resolve) => { release = resolve })
-    const disposed: string[] = []
-    const cleanup = await plugin.setup({ options: {}, rpc: { register: async () => ({ events: { emit: async () => { started(); await blocked } }, dispose: async () => { disposed.push('rpc') } }) }, session: { hook: async (_: string, callback: typeof hook) => { hook = callback; return { dispose: async () => { disposed.push('hook') } } } } } as any)
-    await hook(event('active'))
-    await entered
-    await hook(event('pending'))
-    const closing = cleanup!()
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    assert.ok(!disposed.includes('rpc'))
-    release()
-    await closing
-    assert.deepEqual(disposed.sort(), ['hook', 'rpc'])
-    const directory = join(root, '.local/share/opencode/context-trace')
-    assert.deepEqual((await loadAll(directory, 'ses_test')).map((item) => item.messages[0].text), ['active'])
-    await hook(event('after unload'))
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    assert.equal((await loadAll(directory, 'ses_test')).length, 1)
-  } finally { hooks.deregister() }
-})
-
-test('queued capture returns while the disk lock is held and preserves the hook-time snapshot', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  await mkdir(join(root, '.capture-lock'))
-  let notified!: () => void, wasNotified = false
-  const completed = new Promise<void>((resolve) => { notified = resolve })
-  const queue = createCaptureQueue(root, async () => { wasNotified = true; notified() }, { report: (message) => reports.push(message) })
-  const sample = event('original')
-  queue(sample)
-  sample.messages[0].text = 'changed'
-  await new Promise<void>((resolve) => setTimeout(resolve, 30))
-  assert.equal(wasNotified, false)
-  await rmdir(join(root, '.capture-lock'))
-  await completed
-  assert.equal((await loadAll(root, 'ses_test'))[0].messages[0].text, 'original')
-  assert.deepEqual(reports, [])
-})
-
-test('disabled queue never inspects events or touches disk', async () => {
-  const reports: string[] = []
-  const root = join(await mkdtemp(join(tmpdir(), 'trace-test-')), 'absent')
-  const queue = createCaptureQueue(root, async () => assert.fail(), { maxBytes: 0, report: (message) => reports.push(message) })
-  queue(new Proxy({}, { get: () => { throw new Error('event accessed') } }))
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  await assert.rejects(stat(root), { code: 'ENOENT' })
-  assert.deepEqual(reports, [])
-})
-
-test('queue bounds pending captures, reports skips, and drains after lock release', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  await mkdir(join(root, '.capture-lock'))
-  const reports: string[] = []
-  let count = 0, done!: () => void, last!: () => void
-  const completed = new Promise<void>((resolve) => { done = resolve })
-  const next = new Promise<void>((resolve) => { last = resolve })
-  const queue = createCaptureQueue(root, async () => { count++; if (count === 16) done(); if (count === 17) last() }, { report: (message) => reports.push(message) })
-  for (let i = 0; i < 20; i++) queue(event(`item ${i}`))
-  assert.equal(reports.length, 4)
-  assert.ok(reports.every((message) => /queue full.*skipped/i.test(message)))
-  await rmdir(join(root, '.capture-lock'))
-  await completed
-  assert.equal((await snapshotsFor(root, 'ses_test')).snapshots.length, 16)
-  queue(event('next'))
-  await next
-  assert.equal((await snapshotsFor(root, 'ses_test')).snapshots.length, 17)
-})
-
-test('oversized queued snapshot is skipped without stopping later captures', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  const reports: string[] = []
-  let done!: () => void
-  const completed = new Promise<void>((resolve) => { done = resolve })
-  const queue = createCaptureQueue(root, async () => done(), { report: (message) => reports.push(message) })
-  queue(event('x'.repeat(16 * 1024 * 1024)))
-  queue(event('small'))
-  await completed
-  assert.match(reports.join(' '), /memory limit.*skipped/i)
-  assert.equal((await loadAll(root, 'ses_test'))[0].messages[0].text, 'small')
-})
-
-test('OpenCode session IDs are safely stored even with path separators', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  for (const sessionID of ['ses', 'ses_abc-def', 'ses/../../escape', 'ses_é', 'ses_\ud800']) {
-    await capture(root, { ...event('safe'), sessionID }, async () => {}, { report: (message) => reports.push(message) })
-    assert.equal((await snapshotsFor(root, sessionID)).snapshots.length, 1)
-  }
-  await assert.rejects(snapshotsFor(root, '../escape'), /Invalid session ID/)
-  assert.deepEqual(reports, [])
-})
-
-test('session IDs differing only by case use distinct case-insensitive paths and data', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  for (const sessionID of ['ses_AbC', 'ses_aBc']) await capture(root, { ...event(sessionID), sessionID }, async () => {}, { report: (message) => reports.push(message) })
-  const directories = await readdir(root)
-  assert.equal(new Set(directories.map((name) => name.toLowerCase())).size, 2)
-  for (const id of ['ses_AbC', 'ses_aBc']) assert.equal((await loadAll(root, id))[0].messages[0].text, id)
-  assert.deepEqual(reports, [])
-})
-
-test('listing does not read damaged snapshots and only selected neighbors are inspected', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  await capture(root, event('healthy'), async () => {}, { report: (message) => reports.push(message) })
-  const directory = await sessionDirectory(root)
-  await writeFile(join(directory, '9999999999997-bad.json'), '{broken')
-  await writeFile(join(directory, '9999999999998-face.json'), JSON.stringify({ sessionID: 'ses_test', timestamp: 9999999999998, messages: [] }))
-  await writeFile(join(directory, '9999999999999-face.json'), JSON.stringify({ sessionID: 'ses_test', timestamp: 9999999999999, messages: [] }))
-  const { snapshots, warnings } = await snapshotsFor(root, 'ses_test')
-  assert.equal(snapshots.length, 4)
-  assert.deepEqual(warnings, [])
-  assert.deepEqual((await snapshotFor(root, 'ses_test', snapshots[3].id)).warnings, [])
-  assert.match((await snapshotFor(root, 'ses_test', snapshots[1].id)).warnings[0], /Unable to read/)
-  await assert.rejects(snapshotFor(root, 'ses_test', '../outside'), /not found/)
-  assert.deepEqual(reports, [])
-})
-
-test('a full disk budget preserves snapshots and warns without notifying', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  const reports: string[] = []
-  let notifications = 0
-  await capture(root, event('first'), async () => { notifications++ }, { report: (message: string) => reports.push(message), maxBytes: 1000 })
-  await capture(root, event('x'.repeat(1000)), async () => { notifications++ }, { report: (message: string) => reports.push(message), maxBytes: 1000 })
-  assert.equal((await snapshotsFor(root, 'ses_test')).snapshots.length, 1)
-  assert.equal(notifications, 1)
-  assert.match(reports.join(' '), /limit/i)
-})
-
-test('disk budget defaults and invalid settings are explicit', () => {
-  assert.equal(maxBytesOption(undefined), 1024 ** 3)
-  assert.equal(defaultMaxBytes, 1024 ** 3)
-  assert.equal(maxBytesOption(0), 0)
-  for (const value of [-1, 1.5, '100', null, Infinity]) assert.throws(() => maxBytesOption(value), /maxBytes/)
-})
-
-test('concurrent processes cannot collectively exceed the disk budget', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  const source = `import { capture } from ${JSON.stringify(new URL('./trace.ts', import.meta.url).href)};
-    const event = { sessionID: 'ses_test', system: [], tools: {}, messages: [{ text: 'x'.repeat(100) }], options: {} };
-    await Promise.all(Array.from({ length: 8 }, () => capture(process.argv[1], event, async () => {}, { maxBytes: 1000, report: (message) => { if (!message.includes('disk size limit reached')) { console.error(message); process.exitCode = 1 } } })));`
-  const { spawn } = await import('node:child_process')
-  await Promise.all(Array.from({ length: 4 }, () => new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', source, root], { stdio: 'pipe' })
-    let stderr = ''
-    child.stderr.on('data', (chunk) => { stderr += chunk })
-    child.on('error', reject)
-    child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`worker failed: ${code}: ${stderr}`)))
-  })))
-  const directory = await sessionDirectory(root)
-  const files = await readdir(directory)
-  assert.ok(files.length > 0 && files.length < 32)
-  const sizes = await Promise.all(files.map(async (file) => (await stat(join(directory, file))).size))
-  assert.ok(sizes.reduce((sum, size) => sum + size, 0) <= 1000)
+test('timeline tool bodies preserve content without escaped newline JSON mess', () => {
+  const items = timeline([{ type: 'assistant', parts: [{ type: 'tool', tool: 'shell', state: { input: { command: 'ls\npwd' }, output: 'a\nb' } }] }])
+  const tool = items.find((item: any) => item.badge === 'CLI')
+  assert.match(tool.body, /ls\npwd/)
+  assert.match(tool.body, /a\nb/)
+  assert.doesNotMatch(tool.body, /\\n/)
 })
 
 test('tool details show part duration and failed state error', () => {
@@ -257,39 +77,78 @@ test('tool details show part duration and failed state error', () => {
   assert.equal(detail.error, 'permission denied')
 })
 
-test('damaged snapshots are reported without hiding healthy captures or inventing deltas', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  await capture(root, event('first'), async () => {}, { report: (message) => reports.push(message) })
-  const directory = await sessionDirectory(root)
-  await writeFile(join(directory, '9999999999998-bad.json'), '{broken')
-  await writeFile(join(directory, '9999999999999-face.json'), JSON.stringify({ sessionID: 'ses_test', timestamp: 9999999999999, messages: [{ text: 'last' }] }))
-  const { snapshots } = await snapshotsFor(root, 'ses_test')
-  assert.equal(snapshots.length, 3)
-  const { snapshot, warnings } = await snapshotFor(root, 'ses_test', snapshots[2].id)
-  assert.match(warnings.join(' '), /9999999999998-bad.json/)
-  assert.equal(snapshot.deltaMessages, null)
-  assert.deepEqual(reports, [])
+test('event filters toggle one type and the same key restores all', () => {
+  assert.equal(typeof (panel as any).toggleFilter, 'function')
+  assert.equal(typeof (panel as any).filterItems, 'function')
+  const toggle = (panel as any).toggleFilter
+  assert.equal(toggle(undefined, 'skill'), 'skill')
+  assert.equal(toggle('skill', 'skill'), undefined)
+  assert.equal(toggle('skill', 'tool'), 'tool')
 })
 
-test('capture errors do not escape and diagnostics contain no private data', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  const invalid = join(root, 'not-a-directory')
-  await writeFile(invalid, 'x')
-  const reports: string[] = []
-  await assert.doesNotReject(capture(invalid, event('PRIVATE INPUT'), async () => {}, { report: (message) => reports.push(message) }))
-  assert.equal(reports.length, 1)
-  assert.doesNotMatch(reports[0], /PRIVATE|not-a-directory/)
+test('filters show only matching events, no step or other rows', () => {
+  const filterItems = (panel as any).filterItems
+  const items = [
+    { id: 'a', kind: 'skill' },
+    { id: 'b', kind: 'tool' },
+    { id: 'c', kind: 'thinking' },
+    { id: 'd', kind: 'user' },
+    { id: 'e', kind: 'text' },
+    { id: 'f', kind: 'other' },
+  ]
+  assert.deepEqual(filterItems(items, undefined).map((i: any) => i.id), ['a', 'b', 'c', 'd', 'e', 'f'])
+  assert.deepEqual(filterItems(items, 'skill').map((i: any) => i.id), ['a'])
+  assert.deepEqual(filterItems(items, 'tool').map((i: any) => i.id), ['b'])
+  assert.deepEqual(filterItems(items, 'thinking').map((i: any) => i.id), ['c'])
+  assert.deepEqual(filterItems(items, 'user').map((i: any) => i.id), ['d'])
+  assert.deepEqual(filterItems(items, 'text').map((i: any) => i.id), ['e'])
 })
 
-test('ambiguous or missing evidence never links snapshots to timeline entries', () => {
-  const items = timeline([{ type: 'assistant', parentID: 'msg_1', parts: [] }, { type: 'assistant', parentID: 'other', parts: [] }])
-  assert.ok(items.filter((item: any) => item.badge.startsWith('STEP')).every((item: any) => item.snapshotIndex === undefined))
+test('event rows carry emoji, badge, and preview without badge-word duplication', () => {
+  const { eventRow, eventIcon, eventTone } = panel as any
+  assert.equal(typeof eventRow, 'function')
+  for (const kind of ['user', 'text', 'thinking', 'skill', 'tool', 'other']) {
+    assert.match(String(eventIcon(kind)), /./)
+    assert.match(String(eventTone(kind)), /^[a-z]+$/)
+  }
+  const ask = eventRow({ kind: 'tool', badge: 'ASK', title: 'Which file should I edit?' })
+  assert.match(ask, /ASK/)
+  assert.match(ask, /Which file should I edit\?/)
+  assert.doesNotMatch(ask, /ASK.*\bask\b/i)
+  const think = eventRow({ kind: 'thinking', badge: 'THINK', title: 'considering the plan' })
+  assert.match(think, /THINK/)
+  assert.match(think, /considering the plan/)
+  assert.doesNotMatch(think, /\[THINK\] THINK/)
 })
 
-test('timeline stays in session order without prepending snapshots', () => {
-  const items = timeline([{ id: 'one', type: 'user', text: 'first' }, { id: 'two', type: 'assistant', parts: [] }])
-  assert.deepEqual(items.map((item: any) => item.badge), ['USER', 'STEP #1'])
+test('ensureVisible only moves the top when selection leaves the viewport', () => {
+  const { ensureVisible } = panel as any
+  assert.equal(typeof ensureVisible, 'function')
+  assert.equal(ensureVisible(0, 3, 10), 0)
+  assert.equal(ensureVisible(0, 0, 10), 0)
+  assert.equal(ensureVisible(0, 10, 10), 1)
+  assert.equal(ensureVisible(5, 2, 10), 2)
+  assert.equal(ensureVisible(5, 14, 10), 5)
+  assert.equal(ensureVisible(5, 15, 10), 6)
+  assert.equal(ensureVisible(0, 0, 1), 0)
+  assert.equal(ensureVisible(3, 0, 0), 0)
+})
+
+test('event markdown preserves content with safe fences', () => {
+  assert.equal(typeof (panel as any).eventMarkdown, 'function')
+  const markdown = (panel as any).eventMarkdown
+  const prose = markdown({ kind: 'text', body: 'hello *world*' })
+  assert.match(prose, /hello \*world\*/)
+  const tool = markdown({ kind: 'tool', badge: 'CLI', title: 'shell', body: 'input:\ncommand: ls\n\noutput:\n```\na\n```\n\nstatus: ok  •  chars: 1  •  ~tokens: 1' })
+  assert.match(tool, /ls/)
+  assert.doesNotMatch(tool, /\\n/)
+  const fenceCount = (tool.match(/`{3,}/g) ?? []).length
+  assert.ok(fenceCount >= 2 && fenceCount % 2 === 0)
+})
+
+test('event detail falls back cleanly with no selection', () => {
+  assert.equal((panel as any).eventDetail(undefined), 'No timeline event selected.')
+  assert.equal((panel as any).eventDetail({ detail: 'd', body: 'b' }), 'b')
 })
 
 test('selection handles empty lists and retains its identity as entries change', () => {
@@ -304,77 +163,28 @@ test('selection handles empty lists and retains its identity as entries change',
   assert.equal(select(longList, '199', 1), 199)
 })
 
-test('context views use the independently selected snapshot, not the timeline event', () => {
-  assert.equal(typeof (panel as any).panelContent, 'function')
-  const content = (panel as any).panelContent
-  const item = { detail: 'event detail' }
-  const snapshot = { messages: ['captured'], deltaMessages: null, system: ['system'], tools: [] }
-  assert.equal(content(1, item, snapshot), 'event detail')
-  assert.match(content(3, item, snapshot), /captured/)
-  assert.match(content(2, item, snapshot), /unavailable/i)
-  assert.match(content(3, item, undefined), /select.*snapshot/i)
-})
-
-test('independent concurrent captures preserve every complete snapshot', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  await Promise.all(Array.from({ length: 40 }, (_, i) => capture(root, event(`synthetic ${i}`), async () => {}, { report: (message) => reports.push(message) })))
-  const snapshots = await loadAll(root, 'ses_test')
-  assert.equal(snapshots.length, 40)
-  assert.equal(new Set(snapshots.map((s: any) => s.messages[0].text)).size, 40)
-  assert.equal(snapshots[0].system[0].text, 'synthetic system')
-  assert.equal(snapshots[0].tools[0].description, 'synthetic tool')
-  const directory = await sessionDirectory(root)
-  assert.equal((await stat(directory)).mode & 0o777, 0o700)
-  const files = await readdir(directory)
-  assert.equal(files.length, 40)
-  for (const file of files) {
-    assert.equal((await stat(join(directory, file))).mode & 0o777, 0o600)
-    JSON.parse(await readFile(join(directory, file), 'utf8'))
-  }
-  assert.deepEqual(reports, [])
-})
-
-test('notification failure is reported safely and does not prevent later captures', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  const reports: string[] = []
-  await capture(root, event('PRIVATE INPUT'), async () => { throw new Error('PRIVATE ERROR') }, { report: (message) => reports.push(message) })
-  await capture(root, event('next'), async () => {}, { report: (message) => reports.push(message) })
-  assert.equal((await snapshotsFor(root, 'ses_test')).snapshots.length, 2)
-  assert.equal(reports.length, 1)
-  assert.doesNotMatch(reports[0], /PRIVATE/)
-})
-
-test('separate processes can capture the same session concurrently', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  const source = `import { capture } from ${JSON.stringify(new URL('./trace.ts', import.meta.url).href)};
-    const event = { sessionID: 'ses_test', system: [], tools: {}, messages: [{ text: process.argv[2] }], options: {} };
-    await Promise.all(Array.from({ length: 10 }, (_, i) => capture(process.argv[1], { ...event, messages: [{ text: process.argv[2] + '-' + i }] }, async () => {}, { report: () => { process.exitCode = 1 } })));`
-  const { spawn } = await import('node:child_process')
-  await Promise.all(Array.from({ length: 4 }, (_, index) => new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', source, root, String(index)], { stdio: 'pipe' })
-    let stderr = ''
-    child.stderr.on('data', (chunk) => { stderr += chunk })
-    child.on('error', reject)
-    child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`worker failed: ${stderr}`)))
-  })))
-  const snapshots = await loadAll(root, 'ses_test')
-  assert.equal(snapshots.length, 40)
-  assert.equal(new Set(snapshots.map((snapshot: any) => snapshot.messages[0].text)).size, 40)
-})
-
-test('synthetic sensitive context is stored intact outside the repository', async () => {
-  const reports: string[] = []
-  const root = await mkdtemp(join(tmpdir(), 'trace-test-'))
-  const sample = event('synthetic-private-message')
-  sample.system[0] = { text: 'synthetic-private-system', metadata: { experimental: { instructions: [{ key: 'test', text: 'synthetic-private-instruction' }] } } } as any
-  sample.options = { custom: 'synthetic-private-option' }
-  sample.tools.read = { description: 'synthetic-private-tool', input: { type: 'string' } }
-  await capture(root, sample, async () => {}, { report: (message) => reports.push(message) })
-  const [snapshot] = await loadAll(root, 'ses_test')
-  assert.deepEqual(snapshot.messages, sample.messages)
-  assert.deepEqual(snapshot.system, sample.system)
-  assert.deepEqual(snapshot.options, sample.options)
-  assert.deepEqual(snapshot.tools, [{ name: 'read', description: 'synthetic-private-tool', schema: { type: 'string' } }])
-  assert.deepEqual(reports, [])
+test('getTrace serves timeline items with no capture hook or snapshot reads', async () => {
+  const { registerHooks } = await import('node:module')
+  const stub = (source: string) => `data:text/javascript,${encodeURIComponent(source)}`
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (specifier === '@opencode/plugin') return { url: stub('export const Plugin = { define: (value) => value }'), shortCircuit: true }
+      if (specifier === './rpc') return { url: stub('export const ContextTraceRpc = {}'), shortCircuit: true }
+      if (specifier === './trace') return nextResolve('./trace.ts', context)
+      return nextResolve(specifier, context)
+    },
+  })
+  try {
+    const plugin = (await import('./server.ts')).default
+    const seen: string[] = []
+    let disposed = 0
+    const cleanup = await plugin.setup({
+      options: {},
+      rpc: { register: async (id: any, methods: any) => { seen.push(Object.keys(methods).sort().join(',')); assert.equal(typeof methods.getTrace, 'function'); return { dispose: async () => { disposed++ } } } },
+      session: { hook: async () => { throw new Error('no hook expected') }, context: async () => [{ id: 'u1', type: 'user', text: 'hello' }] },
+    } as any)
+    assert.deepEqual(seen, ['getTrace'])
+    await cleanup!()
+    assert.equal(disposed, 1)
+  } finally { hooks.deregister() }
 })

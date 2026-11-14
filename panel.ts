@@ -15,14 +15,24 @@ export function selectionMarker(focus: PaneFocus): string {
   return focus === "list" ? "▶ " : "› "
 }
 
-export function listPaneBorder(narrow: boolean, focus: PaneFocus): ("bottom" | "right")[] {
+export type BorderSide = "top" | "right" | "bottom" | "left"
+
+export function listPaneBorder(narrow: boolean, focus: PaneFocus): BorderSide[] {
   if (focus !== "list") return []
   return narrow ? ["bottom"] : ["right"]
 }
 
-export function detailPaneBorder(narrow: boolean, focus: PaneFocus): ("top" | "left")[] {
+export function detailPaneBorder(narrow: boolean, focus: PaneFocus): BorderSide[] {
   if (focus !== "detail") return []
   return narrow ? ["top"] : ["left"]
+}
+
+// Border props for the two panes. Always arrays (possibly empty): OpenTUI's
+// borderStyle/borderColor setters promote a falsy `border` (false/undefined)
+// to a full border at mount, so passing `undefined` for the unfocused pane
+// renders a phantom full box until the next focus change repairs it.
+export function paneBorders(narrow: boolean, focus: PaneFocus): { list: BorderSide[], detail: BorderSide[] } {
+  return { list: listPaneBorder(narrow, focus), detail: detailPaneBorder(narrow, focus) }
 }
 
 // Whether the trailing key-hint fits on the single header row next to the

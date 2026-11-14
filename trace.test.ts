@@ -305,6 +305,27 @@ test('focus cues distinguish the active pane from the selection without relying 
   assert.deepEqual(detailPaneBorder(true, 'detail'), ['top'])
 })
 
+test('pane borders are always side arrays so the unfocused pane stays borderless', () => {
+  const { paneBorders } = panel as any
+  assert.equal(typeof paneBorders, 'function')
+  for (const narrow of [false, true]) {
+    for (const focus of ['list', 'detail']) {
+      const { list, detail } = paneBorders(narrow, focus)
+      assert.ok(Array.isArray(list), `list border is an array in narrow=${narrow} focus=${focus}`)
+      assert.ok(Array.isArray(detail), `detail border is an array in narrow=${narrow} focus=${focus}`)
+      // OpenTUI promotes falsy `border` (false/undefined) to a full border when
+      // borderStyle/borderColor apply at mount, so the prop must never be falsy.
+      assert.notEqual(list, undefined)
+      assert.notEqual(detail, false as any)
+      assert.equal(list.length + detail.length, 1, `exactly one divider in narrow=${narrow} focus=${focus}`)
+    }
+  }
+  assert.deepEqual(paneBorders(false, 'list'), { list: ['right'], detail: [] })
+  assert.deepEqual(paneBorders(false, 'detail'), { list: [], detail: ['left'] })
+  assert.deepEqual(paneBorders(true, 'list'), { list: ['bottom'], detail: [] })
+  assert.deepEqual(paneBorders(true, 'detail'), { list: [], detail: ['top'] })
+})
+
 test('header keeps a single row by hiding the trailing key hint when it would overflow', () => {
   const { headerFitsEscHint } = panel as any
   assert.equal(typeof headerFitsEscHint, 'function')

@@ -2,7 +2,7 @@ import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import { createEffect, createSignal, onCleanup, Show, For } from "solid-js"
 import { ContextTraceRpc } from "./rpc"
 import { timeline } from "./trace"
-import { detailPaneBorder, eventDetail, eventMarkdown, eventRow, eventTone, filterItems, focusParts, headerFitsEscHint, listPaneBorder, selectionIndex, selectionMarker, toggleFilter } from "./panel"
+import { eventDetail, eventMarkdown, eventRow, eventTone, filterItems, focusParts, headerFitsEscHint, paneBorders, selectionIndex, selectionMarker, toggleFilter } from "./panel"
 import type { EventFilter } from "./panel"
 
 const filterHints = [
@@ -147,8 +147,8 @@ function ContextTracePanel(props: { panel: any }) {
   const eventBody = () => eventDetail(item())
   const eventMd = () => eventMarkdown(item())
   const rowWidth = () => Math.max(24, Math.floor((narrow() ? panelWidth() : panelWidth() * 0.35) - 4))
-  const listBorder = () => { const sides = listPaneBorder(narrow(), focus()); return sides.length ? sides : undefined }
-  const detailBorder = () => { const sides = detailPaneBorder(narrow(), focus()); return sides.length ? sides : undefined }
+  const listBorder = () => paneBorders(narrow(), focus()).list
+  const detailBorder = () => paneBorders(narrow(), focus()).detail
   return <box flexDirection="column" width="100%" height="100%">
     <box flexDirection="column" width="100%" flexShrink={0} backgroundColor={colors().headerBg} border={["bottom"]} borderStyle="single" borderColor={colors().borderSubtle}>
       <box flexDirection="row" width="100%" height={1}>
